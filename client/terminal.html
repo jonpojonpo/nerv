@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NERV // MAGI AGENT TERMINAL</title>
+  <link rel="stylesheet" href="/nerv.css" />
+  <!-- xterm.js CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10/lib/addon-fit.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- ── TOP BAR ──────────────────────────────────────────────── -->
+    <div id="top-bar">
+      <div class="title">
+        ▓ NERV // MAGI AGENT TERMINAL
+        <span class="ja">特務機関NERV</span>
+      </div>
+      <div class="meta">
+        <span id="conn-status"><span id="conn-dot"></span><span id="conn-label">OFFLINE</span></span>
+        <span class="magi-badge">MAGI-01 // MELCHIOR</span>
+        <span class="clock" id="clock">00:00:00</span>
+      </div>
+    </div>
+
+    <!-- ── TERMINAL VIEWPORT ─────────────────────────────────────── -->
+    <div id="terminal-wrap">
+      <div id="terminal"></div>
+      <div id="task-banner"></div>
+    </div>
+
+    <!-- ── STATUS BAR ────────────────────────────────────────────── -->
+    <div id="status-bar">
+      <div class="status-cell">
+        <span class="label">SYNCHRO RATE</span>
+        <span class="value" id="synchro-value">---</span>
+      </div>
+      <div class="status-cell">
+        <span class="label">STEP</span>
+        <span class="value" id="step-value">0/∞</span>
+      </div>
+      <div class="status-cell">
+        <span class="label">TASK</span>
+        <span class="value" id="task-id-value">—</span>
+      </div>
+      <div class="status-cell">
+        <span class="label">CONDITION</span>
+        <span class="value" id="condition-value">STANDBY</span>
+      </div>
+    </div>
+
+    <!-- ── SIDE CHANNEL ───────────────────────────────────────────── -->
+    <div id="side-channel">
+      <span class="prompt-label"><span class="emoji">💬</span> OPERATOR →</span>
+      <input
+        type="text"
+        id="side-channel-input"
+        placeholder="operator advisory note..."
+        autocomplete="off"
+        spellcheck="false"
+        disabled
+      />
+      <button id="tx-button" disabled>TX</button>
+    </div>
+
+    <!-- ── OUTPUT FILES PANEL ─────────────────────────────────────── -->
+    <div id="output-panel" style="
+      display: none;
+      background: rgba(0,8,4,0.97);
+      border-top: 1px solid #00ff88;
+      padding: 8px 16px 10px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 12px;
+    ">
+      <div style="
+        display: flex; align-items: center; gap: 12px;
+        margin-bottom: 8px;
+      ">
+        <span style="color:#00cc66; letter-spacing:0.15em; font-size:11px;">
+          ▓ OUTPUT FILES
+        </span>
+        <button id="download-all-btn" style="
+          background: rgba(0,40,20,0.8);
+          border: 1px solid #00ff88; color: #00ff88;
+          font-family: inherit; font-size: 11px;
+          letter-spacing: 0.12em; padding: 3px 10px;
+          cursor: pointer; text-transform: uppercase;
+          text-shadow: 0 0 6px #00ff8888;
+        ">↓ DOWNLOAD ALL</button>
+      </div>
+      <div id="output-files" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+    </div>
+
+  </div>
+
+  <!-- ── TASK LAUNCH OVERLAY ──────────────────────────────────────── -->
+  <div id="launch-overlay" style="
+    position: fixed; inset: 0; z-index: 500;
+    background: rgba(0,0,0,0.92);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-family: 'Share Tech Mono', monospace;
+    color: #00ff88;
+  ">
+    <div style="
+      border: 1px solid #00ff88;
+      padding: 32px 48px;
+      max-width: 560px;
+      width: 90%;
+      box-shadow: 0 0 30px rgba(0,255,136,0.2);
+      text-align: center;
+    ">
+      <div style="font-size:13px; letter-spacing:0.15em; margin-bottom:24px; color:#00cc66;">
+        特務機関NERV // MAGI SYSTEM ONLINE
+      </div>
+      <div style="font-size:18px; letter-spacing:0.1em; margin-bottom:28px; text-shadow: 0 0 10px #00ff88;">
+        ▓ MAGI AGENT TERMINAL
+      </div>
+      <textarea
+        id="launch-prompt"
+        placeholder="Enter task prompt..."
+        style="
+          width: 100%; height: 100px; resize: vertical;
+          background: rgba(0,20,10,0.8);
+          border: 1px solid #003322;
+          color: #00ff88;
+          font-family: inherit; font-size: 13px;
+          padding: 10px; outline: none; margin-bottom: 16px;
+          caret-color: #00ff88;
+          letter-spacing: 0.03em;
+        "
+      ></textarea>
+      <div style="display:flex; gap:12px; margin-bottom:16px;">
+        <input
+          id="launch-files"
+          type="file"
+          multiple
+          style="display:none"
+        />
+        <button
+          onclick="document.getElementById('launch-files').click()"
+          style="
+            flex:1; background: rgba(0,30,15,0.8);
+            border: 1px solid #003322; color: #00cc66;
+            font-family: inherit; font-size: 11px;
+            letter-spacing: 0.1em; padding: 8px;
+            cursor: pointer; text-transform: uppercase;
+          "
+        >+ ATTACH FILES</button>
+        <span id="files-label" style="
+          flex:2; font-size:11px; color:#003322;
+          display:flex; align-items:center; letter-spacing:0.05em;
+        ">no files selected</span>
+      </div>
+      <button
+        id="launch-button"
+        style="
+          width: 100%;
+          background: rgba(0,40,20,0.8);
+          border: 1px solid #00ff88;
+          color: #00ff88;
+          font-family: inherit; font-size: 14px;
+          letter-spacing: 0.2em; padding: 12px;
+          cursor: pointer; text-transform: uppercase;
+          text-shadow: 0 0 8px #00ff88;
+          transition: all 0.15s;
+        "
+        onmouseover="this.style.background='rgba(0,255,136,0.1)'"
+        onmouseout="this.style.background='rgba(0,40,20,0.8)'"
+      >
+        ▶ INITIATE TASK
+      </button>
+      <div style="font-size:10px; color:#003322; margin-top:14px; letter-spacing:0.1em;">
+        PATTERN: BLUE // DUMMY SYSTEM: STANDBY
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ──────────────────────────────────────────────────────────────
+    // NERV MAGI TERMINAL — client script
+    // ──────────────────────────────────────────────────────────────
+
+    const $ = (id) => document.getElementById(id);
+
+    // ── Clock ──────────────────────────────────────────────────────
+    function updateClock() {
+      $('clock').textContent = new Date().toTimeString().slice(0, 8);
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // ── xterm.js ───────────────────────────────────────────────────
+    const term = new Terminal({
+      disableStdin: true,
+      cursorBlink: true,
+      theme: {
+        background:   '#000000',
+        foreground:   '#00ff88',
+        cursor:       '#00ff88',
+        cursorAccent: '#000000',
+        selectionBackground: 'rgba(0,255,136,0.2)',
+        black:   '#000000', brightBlack:   '#333333',
+        red:     '#ff2200', brightRed:     '#ff4422',
+        green:   '#00ff88', brightGreen:   '#00ff88',
+        yellow:  '#ffaa00', brightYellow:  '#ffcc44',
+        blue:    '#0088ff', brightBlue:    '#44aaff',
+        magenta: '#cc44ff', brightMagenta: '#dd88ff',
+        cyan:    '#00ccff', brightCyan:    '#44eeff',
+        white:   '#00cc66', brightWhite:   '#00ff88',
+      },
+      fontFamily: "'Share Tech Mono', 'VT323', monospace",
+      fontSize: 13,
+      lineHeight: 1.35,
+      letterSpacing: 0.5,
+      scrollback: 5000,
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open($('terminal'));
+    fitAddon.fit();
+
+    window.addEventListener('resize', () => fitAddon.fit());
+
+    // Boot message
+    term.writeln('\x1b[32m╔══════════════════════════════════════════════════════╗\x1b[0m');
+    term.writeln('\x1b[32m║  NERV // MAGI AGENT TERMINAL SYSTEM — BUILD 001      ║\x1b[0m');
+    term.writeln('\x1b[32m║  特務機関NERV // GEHIRN BIOLOGIC LAB                 ║\x1b[0m');
+    term.writeln('\x1b[32m╠══════════════════════════════════════════════════════╣\x1b[0m');
+    term.writeln('\x1b[32m║  CASPAR   : ARCHITECTURE  ████████████ ONLINE        ║\x1b[0m');
+    term.writeln('\x1b[32m║  BALTHASAR: PHILOSOPHY    ████████████ ONLINE        ║\x1b[0m');
+    term.writeln('\x1b[32m║  MELCHIOR : EXEC ENGINE   ████████████ ONLINE        ║\x1b[0m');
+    term.writeln('\x1b[32m╠══════════════════════════════════════════════════════╣\x1b[0m');
+    term.writeln('\x1b[32m║  ALL MAGI VOTE: PROCEED                              ║\x1b[0m');
+    term.writeln('\x1b[32m╚══════════════════════════════════════════════════════╝\x1b[0m');
+    term.writeln('');
+    term.writeln('\x1b[2mAwaiting task initialisation...\x1b[0m');
+    term.writeln('');
+
+    // ── State ──────────────────────────────────────────────────────
+    let ws = null;
+    let taskId = null;
+    let stepCount = 0;
+    let synchroRate = 0;
+    let condition = 'STANDBY';
+
+    // ── Phosphor thinking spinner ──────────────────────────────────
+    // Runs while the LLM is processing (between tool result and next response).
+    // Lives on its own dedicated line; cleared cleanly before any output.
+    let spinnerActive = false;
+    let spinnerInterval = null;
+    const SPIN_CHARS = '░▒▓▪◆○●!@#$%+=~<>?/\\|▸▶';
+
+    function startSpinner() {
+      if (spinnerActive) return;
+      spinnerActive = true;
+      term.write('\r\n'); // spinner gets its own line
+      _spinFrame();
+      spinnerInterval = setInterval(_spinFrame, 80);
+    }
+
+    function _spinFrame() {
+      if (!spinnerActive) return;
+      const chars = Array.from({ length: 24 },
+        () => SPIN_CHARS[Math.floor(Math.random() * SPIN_CHARS.length)]
+      ).join('');
+      term.write('\r\x1b[2;32m▓ MAGI-01 :: \x1b[0;32m' + chars + '\x1b[0m');
+    }
+
+    function stopSpinner() {
+      if (!spinnerActive) return;
+      spinnerActive = false;
+      clearInterval(spinnerInterval);
+      spinnerInterval = null;
+      term.write('\r\x1b[K'); // erase spinner line; cursor at col 0, same row
+    }
+
+    function setCondition(cond) {
+      condition = cond;
+      const el = $('condition-value');
+      el.textContent = cond;
+      el.className = cond.toLowerCase();
+      const app = document.getElementById('app');
+      app.classList.remove('condition-red', 'condition-amber');
+      if (cond === 'RED') app.classList.add('condition-red');
+      if (cond === 'AMBER') app.classList.add('condition-amber');
+    }
+
+    function updateSynchro() {
+      synchroRate = Math.min(99.9, synchroRate + (Math.random() * 1.5 - 0.2));
+      $('synchro-value').textContent = synchroRate.toFixed(1) + '%';
+    }
+
+    // ── File attachment ────────────────────────────────────────────
+    const BINARY_EXTS = new Set(['xlsx','xls','xlsm','xlsb','ods','pdf','db','sqlite','bin']);
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          // result is "data:<mime>;base64,<data>" — strip prefix
+          const b64 = reader.result.split(',')[1];
+          resolve({ data: b64, encoding: 'base64' });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    const attachedFiles = {};
+    $('launch-files').addEventListener('change', async (e) => {
+      for (const file of e.target.files) {
+        const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+        if (BINARY_EXTS.has(ext)) {
+          attachedFiles[file.name] = await readFileAsBase64(file);
+        } else {
+          attachedFiles[file.name] = await file.text();
+        }
+      }
+      const names = Object.keys(attachedFiles);
+      $('files-label').textContent = names.length
+        ? names.join(', ')
+        : 'no files selected';
+      $('files-label').style.color = names.length ? '#00cc66' : '#003322';
+    });
+
+    // ── Launch task ────────────────────────────────────────────────
+    $('launch-button').addEventListener('click', launchTask);
+    $('launch-prompt').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.ctrlKey) launchTask();
+    });
+
+    async function launchTask() {
+      const prompt = $('launch-prompt').value.trim();
+      if (!prompt) return;
+
+      $('launch-overlay').style.display = 'none';
+      setCondition('GREEN');
+      stepCount = 0;
+      synchroRate = 80 + Math.random() * 10;
+      updateSynchro();
+
+      // Generate task ID display
+      const displayId = 'TASK-' + String(Math.floor(Math.random() * 9999)).padStart(4, '0');
+      $('task-id-value').textContent = displayId;
+
+      // ── Prompt display box ────────────────────────────────────────
+      const BOX_W = 56;  // inner width
+      const ruler = '─'.repeat(BOX_W);
+      term.writeln(`\x1b[32m┌─ OPERATOR TASK ─${ruler.slice(17)}┐\x1b[0m`);
+
+      // Word-wrap prompt into BOX_W-char lines
+      const words = prompt.split(/\s+/);
+      let line = '';
+      for (const word of words) {
+        const test = line ? line + ' ' + word : word;
+        if (test.length > BOX_W - 2) {
+          term.writeln(`\x1b[32m│\x1b[0m \x1b[1;97m${line.padEnd(BOX_W - 2)}\x1b[0m \x1b[32m│\x1b[0m`);
+          line = word;
+        } else {
+          line = test;
+        }
+      }
+      if (line) {
+        term.writeln(`\x1b[32m│\x1b[0m \x1b[1;97m${line.padEnd(BOX_W - 2)}\x1b[0m \x1b[32m│\x1b[0m`);
+      }
+      term.writeln(`\x1b[32m├${'─'.repeat(BOX_W + 2)}┤\x1b[0m`);
+      term.writeln(`\x1b[32m│\x1b[0m \x1b[2m${displayId} // PATTERN: BLUE${' '.repeat(BOX_W - 2 - displayId.length - 16)}\x1b[0m \x1b[32m│\x1b[0m`);
+      term.writeln(`\x1b[32m└${'─'.repeat(BOX_W + 2)}┘\x1b[0m`);
+      term.writeln('');
+
+      // POST /run — SSE
+      try {
+        const resp = await fetch('/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, files: attachedFiles }),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.text();
+          term.writeln(`\x1b[31m[CONDITION RED] HTTP ${resp.status}: ${err}\x1b[0m`);
+          setCondition('RED');
+          return;
+        }
+
+        // Get task ID from header for WebSocket
+        taskId = resp.headers.get('x-task-id');
+        if (taskId) {
+          connectWebSocket(taskId);
+        }
+
+        // Read SSE stream
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const event = JSON.parse(line.slice(6));
+              handleEvent(event);
+            } catch {}
+          }
+        }
+      } catch (err) {
+        term.writeln(`\x1b[31m[CONDITION RED] ${err.message}\x1b[0m`);
+        setCondition('RED');
+      }
+    }
+
+    // Normalise bare \n → \r\n for multi-line blobs (result.md etc.)
+    function termWriteLines(text) {
+      term.write(text.replace(/\r?\n/g, '\r\n'));
+    }
+
+    function handleEvent(event) {
+
+      if (event.type === 'thinking') {
+        // LLM is processing — start spinner on its own line
+        startSpinner();
+
+      } else if (event.type === 'token') {
+        // First token of a response: spinner line becomes the text line
+        stopSpinner();
+        term.write(event.content);
+        stepCount++;
+        $('step-value').textContent = stepCount + '/∞';
+        updateSynchro();
+
+      } else if (event.type === 'command') {
+        // Spinner clears → command appears on that same line
+        if (spinnerActive) {
+          stopSpinner();                          // cursor at col 0, line clear
+        } else {
+          term.write('\r\n');                     // no spinner: start a fresh line
+        }
+        term.write('\x1b[33;2m$ \x1b[33;1m' + event.command.replace(/\r?\n/g, '\r\n') + '\x1b[0m\r\n');
+        stepCount++;
+        $('step-value').textContent = stepCount + '/∞';
+
+      } else if (event.type === 'side_channel') {
+        stopSpinner();
+        term.write('\r\n\x1b[36m[OPERATOR NOTE QUEUED]\x1b[0m\r\n');
+
+      } else if (event.type === 'done') {
+        stopSpinner();
+        term.write('\r\n\x1b[32m╔══════════════════════════════════════════════════════╗\x1b[0m\r\n');
+        term.write('\x1b[32m║  TASK COMPLETE — PATTERN GREEN                       ║\x1b[0m\r\n');
+        term.write('\x1b[32m╚══════════════════════════════════════════════════════╝\x1b[0m\r\n');
+        if (event.output && event.output['result.md']) {
+          term.write('\r\n\x1b[32m── /output/result.md ──\x1b[0m\r\n');
+          termWriteLines(event.output['result.md']);
+          term.write('\r\n');
+        }
+        if (event.output) showOutputPanel(event.output);
+        setCondition('GREEN');
+        $('synchro-value').textContent = '100.0%';
+        enableSideChannel(false);
+
+      } else if (event.type === 'error') {
+        stopSpinner();
+        term.write('\r\n\x1b[31m[CONDITION RED — ' + event.error + ']\x1b[0m\r\n');
+        setCondition('RED');
+        enableSideChannel(false);
+      }
+    }
+
+    // ── WebSocket ──────────────────────────────────────────────────
+    function connectWebSocket(tid) {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws/${tid}`);
+
+      ws.onopen = () => {
+        $('conn-dot').className = 'connected';
+        $('conn-label').textContent = 'ONLINE';
+        enableSideChannel(true);
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          // Events already handled via SSE; WS is secondary feed
+          // (used for direct terminal byte streaming in future)
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        $('conn-dot').className = '';
+        $('conn-label').textContent = 'OFFLINE';
+        enableSideChannel(false);
+      };
+
+      ws.onerror = () => {
+        $('conn-dot').className = '';
+      };
+    }
+
+    // ── Side Channel ───────────────────────────────────────────────
+    function enableSideChannel(enabled) {
+      $('side-channel-input').disabled = !enabled;
+      $('tx-button').disabled = !enabled;
+    }
+
+    function sendSideChannel() {
+      const input = $('side-channel-input');
+      const msg = input.value.trim();
+      if (!msg) return;
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'side_channel', message: msg }));
+      } else if (taskId) {
+        // Fallback: HTTP POST
+        fetch(`/side-channel/${taskId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg }),
+        }).catch(console.error);
+      }
+
+      term.writeln(`\x1b[36m[OPERATOR → AGENT] ${msg}\x1b[0m`);
+      input.value = '';
+
+      // TX flash
+      const btn = $('tx-button');
+      btn.textContent = 'TX ✓';
+      btn.classList.add('sent');
+      setTimeout(() => {
+        btn.textContent = 'TX';
+        btn.classList.remove('sent');
+      }, 600);
+    }
+
+    $('tx-button').addEventListener('click', sendSideChannel);
+    $('side-channel-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendSideChannel();
+    });
+
+    // ── Output file downloads ───────────────────────────────────────
+    let _outputFiles = {};
+
+    function triggerDownload(name, content) {
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    function showOutputPanel(output) {
+      _outputFiles = output;
+      const files = Object.keys(output);
+      if (!files.length) return;
+
+      const panel = $('output-panel');
+      const container = $('output-files');
+      container.innerHTML = '';
+
+      for (const name of files) {
+        const btn = document.createElement('button');
+        btn.textContent = '↓ ' + name;
+        btn.title = output[name].length + ' bytes';
+        btn.style.cssText = `
+          background: rgba(0,20,10,0.9);
+          border: 1px solid #003322; color: #00cc66;
+          font-family: inherit; font-size: 11px;
+          letter-spacing: 0.08em; padding: 4px 10px;
+          cursor: pointer;
+          transition: border-color 0.1s, color 0.1s;
+        `;
+        btn.onmouseover = () => { btn.style.borderColor = '#00ff88'; btn.style.color = '#00ff88'; };
+        btn.onmouseout  = () => { btn.style.borderColor = '#003322'; btn.style.color = '#00cc66'; };
+        btn.onclick = () => triggerDownload(name, output[name]);
+        container.appendChild(btn);
+      }
+
+      panel.style.display = 'block';
+    }
+
+    $('download-all-btn').addEventListener('click', () => {
+      const files = Object.keys(_outputFiles);
+      files.forEach((name, i) => {
+        // stagger slightly so browser doesn't block multiple simultaneous downloads
+        setTimeout(() => triggerDownload(name, _outputFiles[name]), i * 150);
+      });
+    });
+
+  </script>
+</body>
+</html>
