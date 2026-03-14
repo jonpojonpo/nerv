@@ -164,26 +164,31 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
 
       stepCount++;
 
+      // Show spinner while waiting for first token
       stream.thinking();
-      const response = await client.messages.create({
-        model: "claude-opus-4-6",
-        max_tokens: 32768,
-        system: SYSTEM_PROMPT,
-        tools: [BASH_TOOL],
-        messages,
+
+      const msgStream = client.messages.stream(
+        {
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 32768,
+          system: SYSTEM_PROMPT,
+          tools: [BASH_TOOL],
+          messages,
+        },
+        { signal: config.signal }
+      );
+
+      // Stream text tokens to terminal as they arrive
+      msgStream.on("text", (text) => {
+        stream.write(term(`\x1b[2m${text}\x1b[0m`));
       });
 
-      // Collect assistant message content
-      const assistantContent: Anthropic.ContentBlock[] = [];
+      // Wait for the complete message (tool_use blocks need full content)
+      const response = await msgStream.finalMessage();
 
-      for (const block of response.content) {
-        assistantContent.push(block);
-
-        if (block.type === "text" && block.text) {
-          // Stream Claude's reasoning text
-          stream.write(term(`\x1b[2m${block.text}\x1b[0m\n`));
-        }
-      }
+      // Collect content for message history
+      const assistantContent: Anthropic.ContentBlock[] =
+        response.content as Anthropic.ContentBlock[];
 
       messages.push({ role: "assistant", content: assistantContent });
 
