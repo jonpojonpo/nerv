@@ -62,7 +62,8 @@ CONDITION CODES:
 - PATTERN GREEN — task complete
 - PATTERN RED   — error / abort`;
 
-const BASH_TOOL: Anthropic.Tool = {
+// cache_control on the tool so the tool definition is cached alongside the system prompt
+const BASH_TOOL = {
   name: "bash",
   description:
     "Execute a bash command in the secure sandbox. The filesystem persists across calls. Output is streamed to the observer terminal.",
@@ -76,7 +77,8 @@ const BASH_TOOL: Anthropic.Tool = {
     },
     required: ["command"],
   },
-};
+  cache_control: { type: "ephemeral" as const },
+} satisfies Anthropic.Tool;
 
 export interface RunConfig {
   prompt: string;
@@ -124,10 +126,18 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
     await bash.exec(`mkdir -p /input && cat > /input/task.md << 'NERV_EOF'\n${config.prompt}\nNERV_EOF`);
   }
 
+  // Cache the initial user message — this carries the task prompt and any
+  // injected file content, which stays constant across all turns in a session.
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: config.prompt,
+      content: [
+        {
+          type: "text",
+          text: config.prompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
     },
   ];
 
@@ -171,7 +181,14 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
         {
           model: "claude-haiku-4-5-20251001",
           max_tokens: 32768,
-          system: SYSTEM_PROMPT,
+          // Cache the system prompt — it's ~800 tokens sent on every turn
+          system: [
+            {
+              type: "text",
+              text: SYSTEM_PROMPT,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
           tools: [BASH_TOOL],
           messages,
         },
