@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { Bash } from "just-bash";
 import { createSandbox } from "./sandbox.js";
 import { TaskStream } from "./streaming.js";
 
@@ -99,6 +100,51 @@ export interface RunResult {
   done: boolean;
 }
 
+/**
+ * Run discovery commands against the freshly-created sandbox and return a
+ * context block that's prepended to the first user message.  This saves the
+ * model from spending turns on ls / head / .schema discovery.
+ */
+async function discoverSandbox(bash: Bash): Promise<string> {
+  const lines: string[] = ["=== SANDBOX CONTEXT (auto-generated) ===\n"];
+
+  // ── File listing ──────────────────────────────────────────────────
+  const ls = await bash.exec("ls -lh /input/ 2>/dev/null || echo '(empty)'");
+  lines.push("INPUT FILES:\n" + ls.stdout.trim());
+
+  // ── CSV / TSV schemas (header row + row count) ────────────────────
+  const csvOut = await bash.exec(`
+for f in /input/*.csv /input/*.tsv; do
+  [ -f "$f" ] || continue
+  rows=$(( $(wc -l < "$f") - 1 ))
+  echo ""
+  echo "CSV: $f  ($rows data rows)"
+  echo "HEADERS: $(head -1 "$f")"
+done
+`);
+  if (csvOut.stdout.trim()) lines.push(csvOut.stdout.trim());
+
+  // ── SQLite / .db schemas ──────────────────────────────────────────
+  const dbOut = await bash.exec(`
+for f in /input/*.db /input/*.sqlite; do
+  [ -f "$f" ] || continue
+  echo ""
+  echo "SQLITE: $f"
+  echo "TABLES: $(sqlite3 "$f" '.tables' 2>/dev/null)"
+  sqlite3 "$f" '.schema' 2>/dev/null
+done
+`);
+  if (dbOut.stdout.trim()) lines.push(dbOut.stdout.trim());
+
+  // ── task.md contents ─────────────────────────────────────────────
+  const task = await bash.exec("cat /input/task.md 2>/dev/null");
+  if (task.stdout.trim()) {
+    lines.push("TASK (task.md):\n" + task.stdout.trim());
+  }
+
+  return lines.join("\n\n");
+}
+
 export async function runTask(config: RunConfig): Promise<RunResult> {
   const client = new Anthropic();
   const stream = config.stream ?? new TaskStream();
@@ -126,17 +172,16 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
     await bash.exec(`mkdir -p /input && cat > /input/task.md << 'NERV_EOF'\n${config.prompt}\nNERV_EOF`);
   }
 
-  // Cache the initial user message — this carries the task prompt and any
-  // injected file content, which stays constant across all turns in a session.
+  // Discover the sandbox state so the model doesn't waste turns on it
+  const sandboxContext = await discoverSandbox(bash);
+
+  // Cache the initial user message — context + prompt stay constant every turn
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
       content: [
-        {
-          type: "text",
-          text: config.prompt,
-          cache_control: { type: "ephemeral" },
-        },
+        { type: "text", text: sandboxContext },
+        { type: "text", text: config.prompt, cache_control: { type: "ephemeral" } },
       ],
     },
   ];
