@@ -11,11 +11,15 @@ export interface SandboxConfig {
   dataMount?: string;
   /** network allow-list for curl */
   network?: { allowedUrlPrefixes: string[] };
+  /** Persisted /work/data.db bytes from a previous session — rehydrates SQLite state. */
+  persistedDb?: Buffer;
 }
 
 export interface SandboxResult {
   bash: Bash;
   readOutput: () => Promise<Record<string, string>>;
+  /** Read a raw file from /work/ — used to harvest data.db for persistence. */
+  readWorkFile: (name: string) => Promise<Buffer | null>;
   destroy: () => void;
 }
 
@@ -131,6 +135,10 @@ export async function createSandbox(
   // /work/ — rw scratchpad + pre-seeded Python helpers
   const workFs = new InMemoryFs();
   await workFs.writeFile("/nerv_helpers.py", PYTHON_HELPERS);
+  // Rehydrate persisted SQLite DB from a previous session if provided
+  if (config.persistedDb) {
+    await workFs.writeFile("/data.db", config.persistedDb);
+  }
   mountableFs.mount("/work", workFs);
 
   // /output/ — rw results
@@ -177,9 +185,18 @@ export async function createSandbox(
     return result;
   };
 
+  const readWorkFile = async (name: string): Promise<Buffer | null> => {
+    try {
+      const content = await workFs.readFile(`/${name}`);
+      return Buffer.isBuffer(content) ? content : Buffer.from(content as string);
+    } catch {
+      return null;
+    }
+  };
+
   const destroy = () => {
     // just-bash is in-memory; GC handles cleanup.
   };
 
-  return { bash, readOutput, destroy };
+  return { bash, readOutput, readWorkFile, destroy };
 }

@@ -43,8 +43,8 @@
         <span class="value" id="step-value">0/∞</span>
       </div>
       <div class="status-cell">
-        <span class="label">TASK</span>
-        <span class="value" id="task-id-value">—</span>
+        <span class="label">SESSION</span>
+        <span class="value" id="session-id-value">—</span>
       </div>
       <div class="status-cell">
         <span class="label">CONDITION</span>
@@ -52,18 +52,75 @@
       </div>
     </div>
 
-    <!-- ── SIDE CHANNEL ───────────────────────────────────────────── -->
-    <div id="side-channel">
-      <span class="prompt-label"><span class="emoji">💬</span> OPERATOR →</span>
-      <input
-        type="text"
-        id="side-channel-input"
-        placeholder="operator advisory note..."
-        autocomplete="off"
-        spellcheck="false"
-        disabled
-      />
-      <button id="tx-button" disabled>TX</button>
+    <!-- ── CHAT CONTINUATION (replaces side-channel after CODE GREEN) ── -->
+    <div id="chat-bar" style="display:none; flex-direction:column; gap:0;">
+
+      <!-- Running mode: operator side-channel (shown during task execution) -->
+      <div id="side-channel" style="display:none;">
+        <span class="prompt-label"><span class="emoji">💬</span> OPERATOR →</span>
+        <input
+          type="text"
+          id="side-channel-input"
+          placeholder="operator advisory note..."
+          autocomplete="off"
+          spellcheck="false"
+          disabled
+        />
+        <button id="tx-button" disabled>TX</button>
+      </div>
+
+      <!-- Chat mode: conversation continuation (shown after CODE GREEN) -->
+      <div id="chat-continue" style="display:none; padding: 8px 12px; background: rgba(0,8,4,0.97); border-top: 1px solid #00ff88;">
+        <div style="display:flex; align-items:flex-start; gap:8px;">
+          <span style="color:#00cc66; font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:0.12em; padding-top:9px; white-space:nowrap;">
+            ▓ CONTINUE →
+          </span>
+          <textarea
+            id="chat-input"
+            placeholder="continue the conversation..."
+            rows="2"
+            style="
+              flex:1; resize:vertical; min-height:36px; max-height:160px;
+              background: rgba(0,20,10,0.8);
+              border: 1px solid #003322;
+              color: #00ff88;
+              font-family: 'Share Tech Mono', monospace; font-size: 12px;
+              padding: 8px 10px; outline: none;
+              caret-color: #00ff88; letter-spacing: 0.03em;
+              transition: border-color 0.15s;
+            "
+            onfocus="this.style.borderColor='#00ff88'"
+            onblur="this.style.borderColor='#003322'"
+          ></textarea>
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            <button id="chat-send-btn" style="
+              background: rgba(0,40,20,0.8);
+              border: 1px solid #00ff88; color: #00ff88;
+              font-family: 'Share Tech Mono', monospace; font-size: 11px;
+              letter-spacing: 0.12em; padding: 8px 14px;
+              cursor: pointer; text-transform: uppercase;
+              text-shadow: 0 0 6px #00ff8888;
+              white-space:nowrap;
+            ">▶ SEND</button>
+            <button id="new-session-btn" style="
+              background: rgba(0,10,5,0.8);
+              border: 1px solid #003322; color: #005522;
+              font-family: 'Share Tech Mono', monospace; font-size: 10px;
+              letter-spacing: 0.1em; padding: 5px 10px;
+              cursor: pointer; text-transform: uppercase;
+              white-space:nowrap;
+            "
+            onmouseover="this.style.borderColor='#00ff88';this.style.color='#00cc66'"
+            onmouseout="this.style.borderColor='#003322';this.style.color='#005522'"
+            >+ NEW SESSION</button>
+          </div>
+        </div>
+        <div id="session-badge" style="
+          margin-top:4px; font-family:'Share Tech Mono',monospace;
+          font-size:10px; color:#005522; letter-spacing:0.08em;
+        "></div>
+      </div>
+
     </div>
 
     <!-- ── OUTPUT FILES PANEL ─────────────────────────────────────── -->
@@ -133,6 +190,25 @@
           letter-spacing: 0.03em;
         "
       ></textarea>
+
+      <!-- Session restore row -->
+      <div style="display:flex; gap:8px; margin-bottom:12px; align-items:center;">
+        <input
+          id="session-restore-input"
+          type="text"
+          placeholder="session ID to restore (optional)"
+          style="
+            flex:1; background: rgba(0,10,5,0.8);
+            border: 1px solid #002211; color: #005522;
+            font-family: inherit; font-size: 11px;
+            letter-spacing: 0.06em; padding: 7px 10px;
+            outline:none; caret-color:#00ff88;
+          "
+          onfocus="this.style.borderColor='#00aa44';this.style.color='#00cc66'"
+          onblur="this.style.borderColor='#002211';this.style.color='#005522'"
+        />
+      </div>
+
       <div style="display:flex; gap:12px; margin-bottom:16px;">
         <input
           id="launch-files"
@@ -244,13 +320,13 @@
     // ── State ──────────────────────────────────────────────────────
     let ws = null;
     let taskId = null;
+    let sessionId = null;
     let stepCount = 0;
     let synchroRate = 0;
     let condition = 'STANDBY';
+    let chatTurn = 0; // number of continuation messages sent
 
     // ── Phosphor thinking spinner ──────────────────────────────────
-    // Runs while the LLM is processing (between tool result and next response).
-    // Lives on its own dedicated line; cleared cleanly before any output.
     let spinnerActive = false;
     let spinnerInterval = null;
     const SPIN_CHARS = '░▒▓▪◆○●!@#$%+=~<>?/\\|▸▶';
@@ -258,7 +334,7 @@
     function startSpinner() {
       if (spinnerActive) return;
       spinnerActive = true;
-      term.write('\r\n'); // spinner gets its own line
+      term.write('\r\n');
       _spinFrame();
       spinnerInterval = setInterval(_spinFrame, 80);
     }
@@ -276,7 +352,7 @@
       spinnerActive = false;
       clearInterval(spinnerInterval);
       spinnerInterval = null;
-      term.write('\r\x1b[K'); // erase spinner line; cursor at col 0, same row
+      term.write('\r\x1b[K');
     }
 
     function setCondition(cond) {
@@ -302,7 +378,6 @@
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
-          // result is "data:<mime>;base64,<data>" — strip prefix
           const b64 = reader.result.split(',')[1];
           resolve({ data: b64, encoding: 'base64' });
         };
@@ -328,6 +403,25 @@
       $('files-label').style.color = names.length ? '#00cc66' : '#003322';
     });
 
+    // ── Enter run/chat mode UI ─────────────────────────────────────
+    function enterRunMode() {
+      $('chat-bar').style.display = 'flex';
+      $('side-channel').style.display = 'flex';
+      $('chat-continue').style.display = 'none';
+    }
+
+    function enterChatMode() {
+      $('chat-bar').style.display = 'flex';
+      $('side-channel').style.display = 'none';
+      $('chat-continue').style.display = 'block';
+      $('chat-input').focus();
+      // Show session ID hint
+      if (sessionId) {
+        $('session-badge').textContent =
+          'SESSION: ' + sessionId.slice(0, 8) + '...  //  DB persisted to ~/.nerv/sessions/';
+      }
+    }
+
     // ── Launch task ────────────────────────────────────────────────
     $('launch-button').addEventListener('click', launchTask);
     $('launch-prompt').addEventListener('keydown', (e) => {
@@ -338,22 +432,24 @@
       const prompt = $('launch-prompt').value.trim();
       if (!prompt) return;
 
+      // Optional session restore
+      const restoreId = $('session-restore-input').value.trim() || null;
+
       $('launch-overlay').style.display = 'none';
+      enterRunMode();
       setCondition('GREEN');
       stepCount = 0;
+      chatTurn = 0;
       synchroRate = 80 + Math.random() * 10;
       updateSynchro();
 
-      // Generate task ID display
+      // Display task ID
       const displayId = 'TASK-' + String(Math.floor(Math.random() * 9999)).padStart(4, '0');
-      $('task-id-value').textContent = displayId;
 
-      // ── Prompt display box ────────────────────────────────────────
-      const BOX_W = 56;  // inner width
+      // ── Prompt display box ─────────────────────────────────────
+      const BOX_W = 56;
       const ruler = '─'.repeat(BOX_W);
       term.writeln(`\x1b[32m┌─ OPERATOR TASK ─${ruler.slice(17)}┐\x1b[0m`);
-
-      // Word-wrap prompt into BOX_W-char lines
       const words = prompt.split(/\s+/);
       let line = '';
       for (const word of words) {
@@ -370,15 +466,88 @@
       }
       term.writeln(`\x1b[32m├${'─'.repeat(BOX_W + 2)}┤\x1b[0m`);
       term.writeln(`\x1b[32m│\x1b[0m \x1b[2m${displayId} // PATTERN: BLUE${' '.repeat(BOX_W - 2 - displayId.length - 16)}\x1b[0m \x1b[32m│\x1b[0m`);
+      if (restoreId) {
+        const restoreLabel = 'RESTORING SESSION: ' + restoreId.slice(0, 16) + '...';
+        term.writeln(`\x1b[32m│\x1b[0m \x1b[36m${restoreLabel.padEnd(BOX_W - 2)}\x1b[0m \x1b[32m│\x1b[0m`);
+      }
       term.writeln(`\x1b[32m└${'─'.repeat(BOX_W + 2)}┘\x1b[0m`);
       term.writeln('');
 
-      // POST /run — SSE
+      await streamTask('/run', {
+        prompt,
+        files: attachedFiles,
+        ...(restoreId ? { sessionId: restoreId } : {}),
+      });
+    }
+
+    // ── Chat continuation ──────────────────────────────────────────
+    $('chat-send-btn').addEventListener('click', sendChat);
+    $('chat-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendChat();
+    });
+
+    $('new-session-btn').addEventListener('click', () => {
+      // Reset to launch overlay for a fresh session
+      sessionId = null;
+      chatTurn = 0;
+      $('launch-overlay').style.display = 'flex';
+      $('chat-continue').style.display = 'none';
+      $('side-channel').style.display = 'none';
+      $('chat-bar').style.display = 'none';
+      $('output-panel').style.display = 'none';
+      $('session-restore-input').value = '';
+      $('launch-prompt').value = '';
+      setCondition('STANDBY');
+    });
+
+    async function sendChat() {
+      const input = $('chat-input');
+      const message = input.value.trim();
+      if (!message || !sessionId) return;
+
+      input.value = '';
+      $('chat-send-btn').disabled = true;
+      chatTurn++;
+
+      // Show chat message in terminal
+      const BOX_W = 56;
+      term.write('\r\n');
+      term.writeln(`\x1b[36m┌─ CHAT [${chatTurn}] ${'─'.repeat(BOX_W - 10)}┐\x1b[0m`);
+      const words = message.split(/\s+/);
+      let line = '';
+      for (const word of words) {
+        const test = line ? line + ' ' + word : word;
+        if (test.length > BOX_W - 2) {
+          term.writeln(`\x1b[36m│\x1b[0m \x1b[97m${line.padEnd(BOX_W - 2)}\x1b[0m \x1b[36m│\x1b[0m`);
+          line = word;
+        } else {
+          line = test;
+        }
+      }
+      if (line) {
+        term.writeln(`\x1b[36m│\x1b[0m \x1b[97m${line.padEnd(BOX_W - 2)}\x1b[0m \x1b[36m│\x1b[0m`);
+      }
+      term.writeln(`\x1b[36m└${'─'.repeat(BOX_W + 2)}┘\x1b[0m`);
+      term.writeln('');
+
+      enterRunMode();
+      enableSideChannel(true);
+      setCondition('AMBER');
+      synchroRate = 80 + Math.random() * 10;
+      updateSynchro();
+
+      await streamTask(`/chat/${sessionId}`, { message });
+
+      $('chat-send-btn').disabled = false;
+    }
+
+    // ── Core SSE streaming helper ──────────────────────────────────
+    async function streamTask(url, body) {
       try {
-        const resp = await fetch('/run', {
+        const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, files: attachedFiles }),
+          body: JSON.stringify(body),
         });
 
         if (!resp.ok) {
@@ -388,10 +557,16 @@
           return;
         }
 
-        // Get task ID from header for WebSocket
-        taskId = resp.headers.get('x-task-id');
-        if (taskId) {
-          connectWebSocket(taskId);
+        // Capture session + task IDs from response headers
+        const newSessionId = resp.headers.get('x-session-id');
+        const newTaskId = resp.headers.get('x-task-id');
+        if (newSessionId) {
+          sessionId = newSessionId;
+          $('session-id-value').textContent = newSessionId.slice(0, 8) + '…';
+        }
+        if (newTaskId) {
+          taskId = newTaskId;
+          connectWebSocket(newTaskId);
         }
 
         // Read SSE stream
@@ -427,11 +602,9 @@
     function handleEvent(event) {
 
       if (event.type === 'thinking') {
-        // LLM is processing — start spinner on its own line
         startSpinner();
 
       } else if (event.type === 'token') {
-        // First token of a response: spinner line becomes the text line
         stopSpinner();
         term.write(event.content);
         stepCount++;
@@ -439,11 +612,10 @@
         updateSynchro();
 
       } else if (event.type === 'command') {
-        // Spinner clears → command appears on that same line
         if (spinnerActive) {
-          stopSpinner();                          // cursor at col 0, line clear
+          stopSpinner();
         } else {
-          term.write('\r\n');                     // no spinner: start a fresh line
+          term.write('\r\n');
         }
         term.write('\x1b[33;2m$ \x1b[33;1m' + event.command.replace(/\r?\n/g, '\r\n') + '\x1b[0m\r\n');
         stepCount++;
@@ -466,18 +638,26 @@
         if (event.output) showOutputPanel(event.output);
         setCondition('GREEN');
         $('synchro-value').textContent = '100.0%';
-        enableSideChannel(false);
+
+        // Switch to chat continuation mode
+        enterChatMode();
+
+        // Write chat prompt hint to terminal
+        term.write('\r\n\x1b[2;36m// Session active — continue in the chat bar below or start a new session\x1b[0m\r\n');
 
       } else if (event.type === 'error') {
         stopSpinner();
         term.write('\r\n\x1b[31m[CONDITION RED — ' + event.error + ']\x1b[0m\r\n');
         setCondition('RED');
-        enableSideChannel(false);
+        enterChatMode();
       }
     }
 
     // ── WebSocket ──────────────────────────────────────────────────
     function connectWebSocket(tid) {
+      if (ws) {
+        try { ws.close(); } catch {}
+      }
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${location.host}/ws/${tid}`);
 
@@ -487,12 +667,8 @@
         enableSideChannel(true);
       };
 
-      ws.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data);
-          // Events already handled via SSE; WS is secondary feed
-          // (used for direct terminal byte streaming in future)
-        } catch {}
+      ws.onmessage = () => {
+        // Events handled via SSE; WS used for side-channel TX
       };
 
       ws.onclose = () => {
@@ -520,7 +696,6 @@
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'side_channel', message: msg }));
       } else if (taskId) {
-        // Fallback: HTTP POST
         fetch(`/side-channel/${taskId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -531,7 +706,6 @@
       term.writeln(`\x1b[36m[OPERATOR → AGENT] ${msg}\x1b[0m`);
       input.value = '';
 
-      // TX flash
       const btn = $('tx-button');
       btn.textContent = 'TX ✓';
       btn.classList.add('sent');
@@ -594,7 +768,6 @@
     $('download-all-btn').addEventListener('click', () => {
       const files = Object.keys(_outputFiles);
       files.forEach((name, i) => {
-        // stagger slightly so browser doesn't block multiple simultaneous downloads
         setTimeout(() => triggerDownload(name, _outputFiles[name]), i * 150);
       });
     });

@@ -32,6 +32,7 @@ SQLITE (bash CLI):
            sqlite3 /work/data.db "SELECT * FROM t;"   ← state is preserved
 - For one-off ephemeral queries: sqlite3 :memory: "SELECT ..."
 - NEVER use bare filenames like sqlite3 myfile.db — always use full paths starting with /
+- /work/data.db persists for the entire conversation — build on it across turns.
 
 PYTHON:
 - python3 is available (CPython 3.13 WASM). Standard library ONLY — no pip, no third-party packages.
@@ -47,6 +48,12 @@ PYTHON:
   Multi-line inline Python causes indentation errors. Write to file, then run: python3 /work/script.py
 - Indent class methods with 4 spaces. Never leave an empty class/function body — use pass.
 - Syntax-check before running: python3 -c "import ast; ast.parse(open('/work/script.py').read()); print('OK')"
+
+CHAT MODE:
+- After PATTERN GREEN, the operator may send follow-up messages to continue the conversation.
+- The sandbox (including /work/data.db and all /work/ files) persists across turns.
+- Build on previous work — query existing tables, refine output, add new analysis.
+- Reference earlier results implicitly; do not re-introduce yourself or re-explain prior steps.
 
 PROTOCOL:
 - Think step by step. Run commands. Read results. Iterate.
@@ -82,6 +89,20 @@ const BASH_TOOL = {
   cache_control: { type: "ephemeral" as const },
 } satisfies Anthropic.Tool;
 
+/**
+ * Long-lived session state: the sandbox stays alive across multiple chat turns
+ * so /work/data.db and other scratchpad files persist naturally.
+ */
+export interface SessionState {
+  bash: Bash;
+  readOutput: () => Promise<Record<string, string>>;
+  /** Read raw bytes from /work/ — used to harvest data.db for host-FS persistence. */
+  readWorkFile: (name: string) => Promise<Buffer | null>;
+  destroy: () => void;
+  /** Accumulated message history across all turns in this session. */
+  messages: Anthropic.MessageParam[];
+}
+
 export interface RunConfig {
   prompt: string;
   files?: Record<string, string | Buffer | Uint8Array>;
@@ -94,11 +115,18 @@ export interface RunConfig {
   onCommand?: (cmd: string) => void;
   /** AbortSignal for hard-abort */
   signal?: AbortSignal;
+  /**
+   * Existing session to continue. If provided, the sandbox and message history
+   * are reused — the caller is responsible for calling session.destroy() later.
+   */
+  session?: SessionState;
 }
 
 export interface RunResult {
   output: Record<string, string>;
   done: boolean;
+  /** Session state for continuation. Caller owns the session lifetime. */
+  session: SessionState;
 }
 
 /**
@@ -146,6 +174,33 @@ done
   return lines.join("\n\n");
 }
 
+/**
+ * Discover the current state of /work/data.db so continuations have schema context.
+ * Returns a formatted block or null if the DB doesn't exist or is empty.
+ */
+async function discoverSessionDb(bash: Bash): Promise<string | null> {
+  const result = await bash.exec(
+    `sqlite3 /work/data.db ".tables" 2>/dev/null`
+  );
+  const tables = result.stdout.trim();
+  if (!tables) return null;
+
+  const schema = await bash.exec(
+    `sqlite3 /work/data.db ".schema" 2>/dev/null`
+  );
+  const rowCounts = await bash.exec(`
+sqlite3 /work/data.db "SELECT name FROM sqlite_master WHERE type='table';" 2>/dev/null | while read t; do
+  echo "$t: $(sqlite3 /work/data.db "SELECT COUNT(*) FROM \\"$t\\";" 2>/dev/null) rows"
+done
+`);
+
+  const lines = ["=== SESSION DB (/work/data.db) ==="];
+  lines.push("TABLES: " + tables);
+  if (schema.stdout.trim()) lines.push(schema.stdout.trim());
+  if (rowCounts.stdout.trim()) lines.push(rowCounts.stdout.trim());
+  return lines.join("\n");
+}
+
 export async function runTask(config: RunConfig): Promise<RunResult> {
   const client = new Anthropic();
   const stream = config.stream ?? new TaskStream();
@@ -162,30 +217,59 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
     });
   }
 
-  const { bash, readOutput, destroy } = await createSandbox({
-    inputFiles: config.files,
-    dataMount: config.dataMount,
-    network: config.network,
-  });
+  // ── Sandbox: reuse existing session or create a fresh one ─────────
+  const isNewSession = !config.session;
+  let sandbox: { bash: Bash; readOutput: () => Promise<Record<string, string>>; readWorkFile: (name: string) => Promise<Buffer | null>; destroy: () => void };
 
-  // Inject the prompt as task.md if no task.md provided
-  if (!config.files?.["task.md"]) {
-    await bash.exec(`mkdir -p /input && cat > /input/task.md << 'NERV_EOF'\n${config.prompt}\nNERV_EOF`);
+  if (config.session) {
+    sandbox = {
+      bash: config.session.bash,
+      readOutput: config.session.readOutput,
+      readWorkFile: config.session.readWorkFile,
+      destroy: config.session.destroy,
+    };
+  } else {
+    sandbox = await createSandbox({
+      inputFiles: config.files,
+      dataMount: config.dataMount,
+      network: config.network,
+    });
   }
 
-  // Discover the sandbox state so the model doesn't waste turns on it
-  const sandboxContext = await discoverSandbox(bash);
+  const { bash, readOutput, readWorkFile } = sandbox;
 
-  // Cache the initial user message — context + prompt stay constant every turn
-  const messages: Anthropic.MessageParam[] = [
-    {
-      role: "user",
-      content: [
-        { type: "text", text: sandboxContext },
-        { type: "text", text: config.prompt, cache_control: { type: "ephemeral" } },
-      ],
-    },
-  ];
+  // ── Build initial message(s) ──────────────────────────────────────
+  let messages: Anthropic.MessageParam[];
+
+  if (config.session) {
+    // Continuation: reuse history, append new user message.
+    // Include current DB schema so Claude knows what's already been built.
+    const dbContext = await discoverSessionDb(bash);
+    const contextParts: Anthropic.ContentBlockParam[] = [];
+    if (dbContext) {
+      contextParts.push({ type: "text", text: dbContext });
+    }
+    contextParts.push({ type: "text", text: config.prompt });
+    messages = [
+      ...config.session.messages,
+      { role: "user", content: contextParts },
+    ];
+  } else {
+    // Fresh session: inject task.md if not supplied, discover sandbox
+    if (!config.files?.["task.md"]) {
+      await bash.exec(`mkdir -p /input && cat > /input/task.md << 'NERV_EOF'\n${config.prompt}\nNERV_EOF`);
+    }
+    const sandboxContext = await discoverSandbox(bash);
+    messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: sandboxContext },
+          { type: "text", text: config.prompt, cache_control: { type: "ephemeral" } },
+        ],
+      },
+    ];
+  }
 
   let done = false;
   let stepCount = 0;
@@ -198,9 +282,7 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
         break;
       }
 
-      // Safety net: if the last message is an assistant message with unmatched
-      // tool_use blocks (e.g. due to an abort mid-loop), patch the history before
-      // the next API call or we'll get a 400 from the Anthropic API.
+      // Safety net: patch orphaned tool_use blocks before next API call
       if (messages.length > 0) {
         const last = messages[messages.length - 1];
         if (last.role === "assistant" && Array.isArray(last.content)) {
@@ -266,7 +348,6 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
           .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
 
         if (orphaned.length > 0) {
-          // Truncated mid-tool-call — can't recover, patch history and stop
           stream.write(
             term(`\x1b[33m[MAGI — response truncated mid-tool-call, stopping]\x1b[0m\n`)
           );
@@ -283,12 +364,10 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
         }
 
         if (response.stop_reason === "max_tokens") {
-          // Pure text truncation — nudge Claude to continue
           stream.write(term(`\x1b[2m[↩ continuing...]\x1b[0m\n`));
           messages.push({ role: "user", content: "Continue." });
           // loop continues — no break
         } else {
-          // Unexpected stop reason
           stream.write(
             term(`\x1b[33m[MAGI — stop_reason: ${response.stop_reason}]\x1b[0m\n`)
           );
@@ -370,8 +449,19 @@ export async function runTask(config: RunConfig): Promise<RunResult> {
 
     const output = await readOutput();
     stream.complete(output);
-    return { output, done };
-  } finally {
-    destroy();
+
+    const session: SessionState = {
+      bash,
+      readOutput,
+      readWorkFile,
+      destroy: sandbox.destroy,
+      messages,
+    };
+
+    return { output, done, session };
+  } catch (err) {
+    // Only destroy on error if we created the sandbox (not a continuation)
+    if (isNewSession) sandbox.destroy();
+    throw err;
   }
 }
